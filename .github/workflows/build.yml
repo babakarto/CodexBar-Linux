@@ -1,0 +1,91 @@
+name: Build & Release (Linux)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-tk \
+            libgirepository1.0-dev \
+            gir1.2-ayatanaappindicator3-0.1 \
+            libcairo2-dev \
+            pkg-config
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Generate icon
+        run: |
+          python -c "
+          from PIL import Image
+          img = Image.open('assets/claude-logo.png').convert('RGBA')
+          img.resize((256, 256), Image.LANCZOS).save('assets/codexbar.png')
+          print('Icon generated')
+          "
+
+      - name: Build executable
+        run: |
+          pyinstaller --onefile \
+            --noconsole \
+            --name "CodexBar" \
+            --icon "assets/codexbar.png" \
+            --add-data "assets:assets" \
+            --hidden-import pystray._appindicator \
+            --hidden-import pystray._xorg \
+            --hidden-import customtkinter \
+            --hidden-import ptyprocess \
+            --hidden-import secretstorage \
+            --collect-data customtkinter \
+            codexbar.py
+
+      - name: Verify build
+        run: |
+          if [ ! -f "dist/CodexBar" ]; then
+            echo "Build failed - CodexBar not found"
+            exit 1
+          fi
+          SIZE=$(du -sh dist/CodexBar | cut -f1)
+          echo "CodexBar size: $SIZE"
+
+      - name: Create tarball
+        run: |
+          cd dist
+          tar czf CodexBar-Linux.tar.gz CodexBar
+          cd ..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexBar-Linux
+          path: dist/CodexBar
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/CodexBar-Linux.tar.gz
+            dist/CodexBar
+          generate_release_notes: true
