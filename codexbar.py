@@ -1026,10 +1026,20 @@ class CodexBarPopup(ctk.CTkToplevel):
         self._on_tab_switch = on_tab_switch
         self._active_tab = "claude"
 
-        self.overrideredirect(True)
+        # On Linux, avoid overrideredirect — it hides the window from
+        # taskbar/Alt+Tab on many DEs (Cinnamon, GNOME, i3, etc.).
+        # Use a normal decorated window instead.
+        self.title("CodexBar")
         self.configure(fg_color=self.CL_BG)
-        self.attributes("-topmost", True)
-        self.attributes("-alpha", 0.0)
+        self.resizable(False, False)
+        try:
+            self.attributes("-topmost", True)
+        except Exception:
+            pass
+        try:
+            self.attributes("-alpha", 0.0)
+        except Exception:
+            pass
 
         cl_tab = _load_logo("claude-logo.png", 18)
         self._cl_tab_icon = ctk.CTkImage(cl_tab, size=(18, 18)) if cl_tab else None
@@ -1054,7 +1064,7 @@ class CodexBarPopup(ctk.CTkToplevel):
         self.geometry(f"{w}x{h}+{self._target_x}+{self._target_y + 14}")
 
         self.bind("<Escape>", lambda e: self._close())
-        self.bind("<FocusOut>", self._on_focus_out)
+        # Don't auto-close on focus out — this is a normal window on Linux
         self.focus_force()
         self.after(40, self._animate_in, 0)
 
@@ -1620,6 +1630,7 @@ class CodexBarApp:
         self.popup = None
         self.running = True
         self.codex_data = None
+        self._no_tray = "--no-tray" in sys.argv
 
     def start(self):
         print("[CodexBar] Fetching your real usage data...\n")
@@ -1636,25 +1647,38 @@ class CodexBarApp:
         self.root = ctk.CTk()
         self.root.withdraw()
 
-        d = self.fetcher.data
-        sl = (100 - d["session_used_pct"]) / 100
-        wl = (100 - d["weekly_used_pct"]) / 100
+        # Try system tray (optional — may fail on some DEs)
+        if not self._no_tray:
+            try:
+                d = self.fetcher.data
+                sl = (100 - d["session_used_pct"]) / 100
+                wl = (100 - d["weekly_used_pct"]) / 100
+                menu = Menu(
+                    MenuItem('Open CodexBar', self._tray_open, default=True),
+                    MenuItem('Refresh', self._tray_refresh),
+                    Menu.SEPARATOR,
+                    MenuItem('Quit', self._tray_quit),
+                )
+                self.tray = pystray.Icon('CodexBar', make_icon(sl, wl), 'CodexBar', menu)
+                threading.Thread(target=self.tray.run, daemon=True).start()
+                print("[CodexBar] Tray icon started")
+            except Exception as e:
+                print(f"[CodexBar] Tray not available ({e}) — running as window only")
+                self.tray = None
+        else:
+            print("[CodexBar] --no-tray: skipping system tray")
 
-        menu = Menu(
-            MenuItem('Open CodexBar', self._tray_open, default=True),
-            MenuItem('Refresh', self._tray_refresh),
-            Menu.SEPARATOR,
-            MenuItem('Quit', self._tray_quit),
-        )
-        self.tray = pystray.Icon('CodexBar', make_icon(sl, wl), 'CodexBar', menu)
-        threading.Thread(target=self.tray.run, daemon=True).start()
+        # Always show the popup window on startup
+        self.root.after(200, self._show_popup)
 
         self.root.after(300_000, self._auto_refresh)
 
         print("\n" + "=" * 50)
-        print("  CodexBar running in system tray!")
-        print("  Look for the icon in your panel/tray area.")
-        print("  Click to open the panel.")
+        print("  CodexBar running!")
+        if self.tray:
+            print("  Tray icon available in your panel.")
+        print("  Window opens automatically.")
+        print("  Use --no-tray to disable system tray.")
         print("=" * 50 + "\n")
 
         self.root.mainloop()
@@ -1693,6 +1717,8 @@ class CodexBarApp:
         self._set_tray_icon(tab)
 
     def _set_tray_icon(self, provider):
+        if not self.tray:
+            return
         try:
             p = "openai" if provider == "openai" else "claude"
             self.tray.icon = make_icon(provider=p)
@@ -1706,10 +1732,14 @@ class CodexBarApp:
                 self.codex_data = self.codex_fetcher.fetch()
             except Exception:
                 pass
-            d = self.fetcher.data
-            self.tray.icon = make_icon(
-                (100 - d["session_used_pct"]) / 100,
-                (100 - d["weekly_used_pct"]) / 100)
+            if self.tray:
+                try:
+                    d = self.fetcher.data
+                    self.tray.icon = make_icon(
+                        (100 - d["session_used_pct"]) / 100,
+                        (100 - d["weekly_used_pct"]) / 100)
+                except Exception:
+                    pass
             print("[CodexBar] Refreshed")
         threading.Thread(target=bg, daemon=True).start()
 
@@ -1722,10 +1752,11 @@ class CodexBarApp:
     def _do_quit(self):
         print("[CodexBar] Bye!")
         self.running = False
-        try:
-            self.tray.stop()
-        except Exception:
-            pass
+        if self.tray:
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
         try:
             self.root.quit()
             self.root.destroy()
