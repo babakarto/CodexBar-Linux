@@ -310,25 +310,19 @@ class ClaudeDataFetcher:
         else:
             print("  -- CLI: not available")
 
-        # 2) Try OAuth token from ~/.claude/.credentials.json
+        # 2) Try local credentials for plan info (no API call — Cloudflare blocks it)
         if not got_usage:
-            api = self._fetch_oauth_api()
-            if api and api.get("source") == "api":
-                self.data = api
-                got_usage = True
-                print(f"  OK OAuth: session {api['session_used_pct']}%, weekly {api['weekly_used_pct']}%")
+            cred = self._fetch_oauth_api()
+            if cred and cred.get("source") == "credentials":
+                self.data["plan"] = cred["plan"]
+                self.data["installed"] = True
+                print(f"  OK Credentials: plan={cred['plan']} (no usage data — API blocked by Cloudflare)")
             else:
-                print("  -- OAuth: not available")
+                print("  -- Credentials: not available")
 
-        # 3) Try browser cookie -> Claude API
+        # 3) Cookie API — skipped on Linux (Cloudflare)
         if not got_usage:
-            api = self._fetch_cookie_api()
-            if api and api.get("source") == "api":
-                self.data = api
-                got_usage = True
-                print(f"  OK Cookie: session {api['session_used_pct']}%, weekly {api['weekly_used_pct']}%")
-            else:
-                print("  -- Cookie: not available")
+            self._fetch_cookie_api()
 
         # 4) Always try JSONL for cost data
         cost = self._fetch_jsonl()
@@ -483,6 +477,12 @@ class ClaudeDataFetcher:
     _CREDS_PATH = Path.home() / ".claude" / ".credentials.json"
 
     def _fetch_oauth_api(self):
+        """Extract plan info from local credentials (no API call needed).
+
+        The claude.ai API is behind Cloudflare bot protection, so plain
+        HTTP requests from Python always get 403.  Instead, we read
+        whatever we can from the local credentials file.
+        """
         if not self._CREDS_PATH.exists():
             return None
         try:
@@ -492,34 +492,27 @@ class ClaudeDataFetcher:
             token = oauth.get("accessToken")
             if not token:
                 return None
+
             tier = oauth.get("rateLimitTier") or oauth.get("subscriptionType") or ""
             plan_local = tier.replace("default_claude_", "").replace("_", " ").title() or "Pro"
-            print(f"    OAuth token found ({len(token)} chars), plan hint: {plan_local}")
-        except Exception as e:
-            print(f"    OAuth creds err: {e}")
-            return None
+            print(f"    OAuth: credentials found, plan: {plan_local}", flush=True)
 
-        result = self._call_claude_api(
-            auth_header=("Authorization", f"Bearer {token}"),
-            plan_hint=plan_local,
-            source_label="api",
-        )
-        if result is None and plan_local:
-            self.data["plan"] = plan_local
-        return result
+            # We can't call the API (Cloudflare), but we can populate the plan
+            d = self._empty()
+            d["plan"] = plan_local
+            d["source"] = "credentials"
+            d["installed"] = True
+            return d
+        except Exception as e:
+            print(f"    OAuth creds err: {e}", flush=True)
+            return None
 
     # ── cookie-based API fetcher ────────────────
 
     def _fetch_cookie_api(self):
-        session_key, browser = _CookieDecryptor.get_session_key()
-        if not session_key:
-            return None
-        print(f"    Got sessionKey from {browser} ({len(session_key)} chars)")
-        return self._call_claude_api(
-            auth_header=("Cookie", f"sessionKey={session_key}"),
-            plan_hint=None,
-            source_label="api",
-        )
+        """Skipped on Linux — claude.ai API is behind Cloudflare bot protection."""
+        print("    Cookie API: skipped (Cloudflare blocks non-browser requests)", flush=True)
+        return None
 
     # ── shared API call logic ──────────────────
 
