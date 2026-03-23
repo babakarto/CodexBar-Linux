@@ -546,12 +546,28 @@ class ClaudeDataFetcher:
                           "Chrome/131.0.0.0 Safari/537.36",
             "Accept": "application/json",
         }
-        try:
-            req = Request("https://api.claude.ai/api/organizations", headers=headers)
-            with urlopen(req, timeout=15) as resp:
-                orgs = json.loads(resp.read())
-        except Exception as e:
-            print(f"    API /organizations err: {e}", flush=True)
+
+        # Try multiple API base URLs — api.claude.ai doesn't resolve on all networks
+        bases = ["https://api.claude.ai", "https://api.anthropic.com"]
+        orgs = None
+        base_url = None
+
+        for base in bases:
+            try:
+                url = f"{base}/api/organizations"
+                print(f"    API: trying {base}...", flush=True)
+                req = Request(url, headers=headers)
+                with urlopen(req, timeout=10) as resp:
+                    orgs = json.loads(resp.read())
+                base_url = base
+                print(f"    API: {base} OK", flush=True)
+                break
+            except Exception as e:
+                print(f"    API: {base} failed ({e})", flush=True)
+                continue
+
+        if orgs is None:
+            print("    API: all endpoints failed", flush=True)
             return None
 
         if not isinstance(orgs, list) or len(orgs) == 0:
@@ -567,9 +583,9 @@ class ClaudeDataFetcher:
 
         try:
             req = Request(
-                f"https://api.claude.ai/api/organizations/{org_id}/usage",
+                f"{base_url}/api/organizations/{org_id}/usage",
                 headers=headers)
-            with urlopen(req, timeout=15) as resp:
+            with urlopen(req, timeout=10) as resp:
                 usage = json.loads(resp.read())
         except Exception as e:
             print(f"    API /usage err: {e}", flush=True)
