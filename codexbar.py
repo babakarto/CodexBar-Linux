@@ -524,8 +524,23 @@ class ClaudeDataFetcher:
     # ── shared API call logic ──────────────────
 
     def _call_claude_api(self, *, auth_header, plan_hint, source_label):
+        # Sanitize header value: urlopen uses latin-1 encoding for headers,
+        # so non-ASCII chars in cookies/tokens must be percent-encoded.
+        header_name, header_value = auth_header
+        try:
+            header_value.encode("latin-1")
+        except UnicodeEncodeError:
+            from urllib.parse import quote
+            # For cookies, percent-encode the value part only
+            if header_name == "Cookie" and "=" in header_value:
+                key, val = header_value.split("=", 1)
+                header_value = f"{key}={quote(val, safe='')}"
+            else:
+                header_value = quote(header_value, safe=" /=;:,")
+            print(f"    API: header re-encoded for latin-1 safety", flush=True)
+
         headers = {
-            auth_header[0]: auth_header[1],
+            header_name: header_value,
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
                           "Chrome/131.0.0.0 Safari/537.36",
@@ -535,8 +550,8 @@ class ClaudeDataFetcher:
             req = Request("https://api.claude.ai/api/organizations", headers=headers)
             with urlopen(req, timeout=15) as resp:
                 orgs = json.loads(resp.read())
-        except (URLError, HTTPError, json.JSONDecodeError) as e:
-            print(f"    API /organizations err: {e}")
+        except Exception as e:
+            print(f"    API /organizations err: {e}", flush=True)
             return None
 
         if not isinstance(orgs, list) or len(orgs) == 0:
@@ -556,8 +571,8 @@ class ClaudeDataFetcher:
                 headers=headers)
             with urlopen(req, timeout=15) as resp:
                 usage = json.loads(resp.read())
-        except (URLError, HTTPError, json.JSONDecodeError) as e:
-            print(f"    API /usage err: {e}")
+        except Exception as e:
+            print(f"    API /usage err: {e}", flush=True)
             return None
 
         return self._parse_api_usage(usage, org, plan_hint, source_label)
