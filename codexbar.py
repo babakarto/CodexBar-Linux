@@ -348,93 +348,55 @@ class ClaudeDataFetcher:
         return self.data
 
     def _fetch_cli(self):
-        """Spawn an interactive Claude session via PTY, send /usage, parse."""
-        if PtyProcess is None:
-            return None
+        """Get usage via subprocess (not PTY — PTY hangs on many Linux setups)."""
         cmd = self._find_claude()
         if not cmd:
             return None
+
+        # Quick pre-check: run "claude /usage" as a subprocess with hard timeout
         try:
-            raw = self._pty_usage(cmd)
+            print("    CLI: trying subprocess...", flush=True)
+            result = subprocess.run(
+                [cmd, "/usage"],
+                capture_output=True, text=True, timeout=10,
+                cwd=str(Path.home()),
+                env={**os.environ, "NO_COLOR": "1", "TERM": "dumb"},
+            )
+            raw = (result.stdout or "") + (result.stderr or "")
+            print(f"    CLI: exit={result.returncode}, len={len(raw)}", flush=True)
+
             if not raw:
                 print("    CLI: no output", flush=True)
                 return None
+
             lower = raw.lower()
             if "unknown skill" in lower or "unknown command" in lower:
                 print("    CLI: /usage not supported on this version", flush=True)
                 return None
+
             if "%" in raw and ("session" in lower or "week" in lower):
                 return self._parse_usage(raw)
+
+            # Try alternative: "claude usage" without slash
+            print("    CLI: trying 'claude usage'...", flush=True)
+            result2 = subprocess.run(
+                [cmd, "usage"],
+                capture_output=True, text=True, timeout=10,
+                cwd=str(Path.home()),
+                env={**os.environ, "NO_COLOR": "1", "TERM": "dumb"},
+            )
+            raw2 = (result2.stdout or "") + (result2.stderr or "")
+            if raw2 and "%" in raw2:
+                lower2 = raw2.lower()
+                if "session" in lower2 or "week" in lower2:
+                    return self._parse_usage(raw2)
+
             print("    CLI: output didn't contain usage data", flush=True)
+        except subprocess.TimeoutExpired:
+            print("    CLI: timed out after 10s", flush=True)
         except Exception as e:
             print(f"    CLI err: {e}", flush=True)
         return None
-
-    @staticmethod
-    def _pty_usage(cmd, timeout_total=12):
-        """Open claude in a PTY, send /usage, collect output, send /exit.
-
-        Uses a hard timeout to prevent hanging when /usage is not available.
-        """
-        neutral_cwd = str(Path.home())
-        try:
-            proc = PtyProcess.spawn(
-                [cmd],
-                dimensions=(40, 120),
-                cwd=neutral_cwd,
-            )
-        except Exception as e:
-            print(f"    PTY spawn failed: {e}", flush=True)
-            return None
-
-        chunks = []
-        stop = threading.Event()
-        got_usage = threading.Event()
-
-        def reader():
-            while not stop.is_set():
-                try:
-                    d = proc.read(8192)
-                    if d:
-                        chunks.append(d)
-                        # Check if we got usage data or an error early
-                        text = "".join(chunks).lower()
-                        if "%used" in text or "% used" in text:
-                            got_usage.set()
-                        if "unknown skill" in text or "unknown command" in text:
-                            stop.set()  # /usage not supported, bail out
-                except EOFError:
-                    break
-                except Exception:
-                    time.sleep(0.1)
-
-        t = threading.Thread(target=reader, daemon=True)
-        t.start()
-
-        try:
-            # Wait for startup (max 4s, bail early if ready)
-            time.sleep(3)
-            proc.write("\n")
-            time.sleep(1.5)
-            if stop.is_set():
-                return "".join(chunks)
-            proc.write("/usage\n")
-            # Wait for data or timeout (max 6s)
-            got_usage.wait(timeout=6)
-        finally:
-            stop.set()
-            try:
-                proc.write("/exit\n")
-            except Exception:
-                pass
-            time.sleep(0.5)
-            try:
-                proc.close(force=True)
-            except Exception:
-                pass
-            t.join(timeout=2)
-
-        return "".join(chunks)
 
     def _find_claude(self):
         places = [
