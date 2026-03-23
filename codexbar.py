@@ -1633,55 +1633,76 @@ class CodexBarApp:
         self._no_tray = "--no-tray" in sys.argv
 
     def start(self):
-        print("[CodexBar] Fetching your real usage data...\n")
-        self.fetcher.fetch_all()
-        print(f"\n[CodexBar] Source: {self.fetcher.data['source']}")
-        try:
-            self.codex_data = self.codex_fetcher.fetch()
-            print(f"[CodexBar] Codex: {'available' if self.codex_data.get('available') else 'not found'}")
-        except Exception as e:
-            print(f"[CodexBar] Codex fetch err: {e}")
-            self.codex_data = CodexDataFetcher._empty()
-
+        # Start GUI immediately — don't block on data fetch
         ctk.set_appearance_mode("light")
         self.root = ctk.CTk()
         self.root.withdraw()
 
-        # Try system tray (optional — may fail on some DEs)
-        if not self._no_tray:
-            try:
-                d = self.fetcher.data
-                sl = (100 - d["session_used_pct"]) / 100
-                wl = (100 - d["weekly_used_pct"]) / 100
-                menu = Menu(
-                    MenuItem('Open CodexBar', self._tray_open, default=True),
-                    MenuItem('Refresh', self._tray_refresh),
-                    Menu.SEPARATOR,
-                    MenuItem('Quit', self._tray_quit),
-                )
-                self.tray = pystray.Icon('CodexBar', make_icon(sl, wl), 'CodexBar', menu)
-                threading.Thread(target=self.tray.run, daemon=True).start()
-                print("[CodexBar] Tray icon started")
-            except Exception as e:
-                print(f"[CodexBar] Tray not available ({e}) — running as window only")
-                self.tray = None
-        else:
-            print("[CodexBar] --no-tray: skipping system tray")
+        # Initialize with empty data so the window can show right away
+        self.codex_data = CodexDataFetcher._empty()
 
-        # Always show the popup window on startup
-        self.root.after(200, self._show_popup)
+        # Show the popup window immediately (with "Loading..." state)
+        self.root.after(100, self._show_popup)
+
+        # Fetch data in background, then update the UI when ready
+        def _bg_fetch():
+            print("[CodexBar] Fetching usage data in background...")
+            self.fetcher.fetch_all()
+            print(f"[CodexBar] Source: {self.fetcher.data['source']}")
+            try:
+                self.codex_data = self.codex_fetcher.fetch()
+                print(f"[CodexBar] Codex: {'available' if self.codex_data.get('available') else 'not found'}")
+            except Exception as e:
+                print(f"[CodexBar] Codex fetch err: {e}")
+
+            # Update UI on main thread once data is ready
+            self.root.after(0, self._refresh_popup)
+
+            # Start tray icon (optional — may fail on some DEs)
+            if not self._no_tray:
+                self.root.after(0, self._start_tray)
+
+        threading.Thread(target=_bg_fetch, daemon=True).start()
 
         self.root.after(300_000, self._auto_refresh)
 
         print("\n" + "=" * 50)
         print("  CodexBar running!")
-        if self.tray:
-            print("  Tray icon available in your panel.")
-        print("  Window opens automatically.")
+        print("  Window opens immediately.")
+        print("  Data loading in background...")
         print("  Use --no-tray to disable system tray.")
         print("=" * 50 + "\n")
 
         self.root.mainloop()
+
+    def _start_tray(self):
+        """Start system tray icon (called after data fetch, on main thread)."""
+        try:
+            d = self.fetcher.data
+            sl = (100 - d["session_used_pct"]) / 100
+            wl = (100 - d["weekly_used_pct"]) / 100
+            menu = Menu(
+                MenuItem('Open CodexBar', self._tray_open, default=True),
+                MenuItem('Refresh', self._tray_refresh),
+                Menu.SEPARATOR,
+                MenuItem('Quit', self._tray_quit),
+            )
+            self.tray = pystray.Icon('CodexBar', make_icon(sl, wl), 'CodexBar', menu)
+            threading.Thread(target=self.tray.run, daemon=True).start()
+            print("[CodexBar] Tray icon started")
+        except Exception as e:
+            print(f"[CodexBar] Tray not available ({e}) — window-only mode")
+            self.tray = None
+
+    def _refresh_popup(self):
+        """Rebuild the popup with fresh data."""
+        if self.popup is not None:
+            try:
+                self.popup.destroy()
+            except Exception:
+                pass
+            self.popup = None
+        self._show_popup()
 
     def _tray_open(self, *_):
         self.root.after(0, self._show_popup)
