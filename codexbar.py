@@ -547,8 +547,8 @@ class ClaudeDataFetcher:
             "Accept": "application/json",
         }
 
-        # Try multiple API base URLs — api.claude.ai doesn't resolve on all networks
-        bases = ["https://api.claude.ai", "https://api.anthropic.com"]
+        # claude.ai/api is the correct public endpoint for OAuth/cookie auth
+        bases = ["https://claude.ai", "https://api.anthropic.com"]
         orgs = None
         base_url = None
 
