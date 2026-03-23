@@ -1641,26 +1641,27 @@ class CodexBarApp:
         # Initialize with empty data so the window can show right away
         self.codex_data = CodexDataFetcher._empty()
 
+        # Start tray icon immediately (before fetch, so it's visible right away)
+        if not self._no_tray:
+            self._start_tray()
+
         # Show the popup window immediately (with "Loading..." state)
         self.root.after(100, self._show_popup)
 
         # Fetch data in background, then update the UI when ready
         def _bg_fetch():
-            print("[CodexBar] Fetching usage data in background...")
+            print("[CodexBar] Fetching usage data in background...", flush=True)
             self.fetcher.fetch_all()
-            print(f"[CodexBar] Source: {self.fetcher.data['source']}")
+            print(f"[CodexBar] Source: {self.fetcher.data['source']}", flush=True)
             try:
                 self.codex_data = self.codex_fetcher.fetch()
-                print(f"[CodexBar] Codex: {'available' if self.codex_data.get('available') else 'not found'}")
+                print(f"[CodexBar] Codex: {'available' if self.codex_data.get('available') else 'not found'}", flush=True)
             except Exception as e:
-                print(f"[CodexBar] Codex fetch err: {e}")
+                print(f"[CodexBar] Codex fetch err: {e}", flush=True)
 
-            # Update UI on main thread once data is ready
+            # Update UI + tray icon on main thread once data is ready
             self.root.after(0, self._refresh_popup)
-
-            # Start tray icon (optional — may fail on some DEs)
-            if not self._no_tray:
-                self.root.after(0, self._start_tray)
+            self.root.after(0, self._update_tray_icon)
 
         threading.Thread(target=_bg_fetch, daemon=True).start()
 
@@ -1671,28 +1672,52 @@ class CodexBarApp:
         print("  Window opens immediately.")
         print("  Data loading in background...")
         print("  Use --no-tray to disable system tray.")
-        print("=" * 50 + "\n")
+        print("=" * 50 + "\n", flush=True)
 
         self.root.mainloop()
 
     def _start_tray(self):
-        """Start system tray icon (called after data fetch, on main thread)."""
+        """Start system tray icon immediately at startup."""
+        print("[CodexBar] Tray: creating icon...", flush=True)
         try:
-            d = self.fetcher.data
-            sl = (100 - d["session_used_pct"]) / 100
-            wl = (100 - d["weekly_used_pct"]) / 100
+            icon_img = make_icon()
+            print(f"[CodexBar] Tray: icon image created ({icon_img.size})", flush=True)
             menu = Menu(
                 MenuItem('Open CodexBar', self._tray_open, default=True),
                 MenuItem('Refresh', self._tray_refresh),
                 Menu.SEPARATOR,
                 MenuItem('Quit', self._tray_quit),
             )
-            self.tray = pystray.Icon('CodexBar', make_icon(sl, wl), 'CodexBar', menu)
-            threading.Thread(target=self.tray.run, daemon=True).start()
-            print("[CodexBar] Tray icon started")
+            self.tray = pystray.Icon('CodexBar', icon_img, 'CodexBar', menu)
+            print(f"[CodexBar] Tray: pystray.Icon created, backend={pystray.Icon.__module__}", flush=True)
+
+            def _run_tray():
+                print("[CodexBar] Tray: calling tray.run()...", flush=True)
+                try:
+                    self.tray.run()
+                    print("[CodexBar] Tray: run() returned", flush=True)
+                except Exception as e:
+                    print(f"[CodexBar] Tray: run() error: {e}", flush=True)
+
+            threading.Thread(target=_run_tray, daemon=True).start()
+            print("[CodexBar] Tray: thread started", flush=True)
         except Exception as e:
-            print(f"[CodexBar] Tray not available ({e}) — window-only mode")
+            import traceback
+            print(f"[CodexBar] Tray: FAILED — {e}", flush=True)
+            traceback.print_exc()
             self.tray = None
+
+    def _update_tray_icon(self):
+        """Update tray icon with fresh data."""
+        if not self.tray:
+            return
+        try:
+            d = self.fetcher.data
+            self.tray.icon = make_icon(
+                (100 - d["session_used_pct"]) / 100,
+                (100 - d["weekly_used_pct"]) / 100)
+        except Exception:
+            pass
 
     def _refresh_popup(self):
         """Rebuild the popup with fresh data."""
