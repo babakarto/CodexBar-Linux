@@ -356,23 +356,40 @@ class ClaudeDataFetcher:
             return None
         try:
             raw = self._pty_usage(cmd)
-            if raw and "%" in raw and ("session" in raw.lower() or "week" in raw.lower()):
+            if not raw:
+                print("    CLI: no output", flush=True)
+                return None
+            lower = raw.lower()
+            if "unknown skill" in lower or "unknown command" in lower:
+                print("    CLI: /usage not supported on this version", flush=True)
+                return None
+            if "%" in raw and ("session" in lower or "week" in lower):
                 return self._parse_usage(raw)
+            print("    CLI: output didn't contain usage data", flush=True)
         except Exception as e:
-            print(f"    CLI err: {e}")
+            print(f"    CLI err: {e}", flush=True)
         return None
 
     @staticmethod
-    def _pty_usage(cmd, startup_wait=5, trust_wait=3, cmd_wait=8):
-        """Open claude in a PTY, send /usage, collect output, send /exit."""
+    def _pty_usage(cmd, timeout_total=12):
+        """Open claude in a PTY, send /usage, collect output, send /exit.
+
+        Uses a hard timeout to prevent hanging when /usage is not available.
+        """
         neutral_cwd = str(Path.home())
-        proc = PtyProcess.spawn(
-            [cmd],
-            dimensions=(40, 120),
-            cwd=neutral_cwd,
-        )
+        try:
+            proc = PtyProcess.spawn(
+                [cmd],
+                dimensions=(40, 120),
+                cwd=neutral_cwd,
+            )
+        except Exception as e:
+            print(f"    PTY spawn failed: {e}", flush=True)
+            return None
+
         chunks = []
         stop = threading.Event()
+        got_usage = threading.Event()
 
         def reader():
             while not stop.is_set():
@@ -380,6 +397,12 @@ class ClaudeDataFetcher:
                     d = proc.read(8192)
                     if d:
                         chunks.append(d)
+                        # Check if we got usage data or an error early
+                        text = "".join(chunks).lower()
+                        if "%used" in text or "% used" in text:
+                            got_usage.set()
+                        if "unknown skill" in text or "unknown command" in text:
+                            stop.set()  # /usage not supported, bail out
                 except EOFError:
                     break
                 except Exception:
@@ -389,23 +412,27 @@ class ClaudeDataFetcher:
         t.start()
 
         try:
-            time.sleep(startup_wait)
+            # Wait for startup (max 4s, bail early if ready)
+            time.sleep(3)
             proc.write("\n")
-            time.sleep(trust_wait)
+            time.sleep(1.5)
+            if stop.is_set():
+                return "".join(chunks)
             proc.write("/usage\n")
-            time.sleep(cmd_wait)
+            # Wait for data or timeout (max 6s)
+            got_usage.wait(timeout=6)
         finally:
             stop.set()
             try:
                 proc.write("/exit\n")
             except Exception:
                 pass
-            time.sleep(1)
+            time.sleep(0.5)
             try:
                 proc.close(force=True)
             except Exception:
                 pass
-            t.join(timeout=3)
+            t.join(timeout=2)
 
         return "".join(chunks)
 
